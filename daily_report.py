@@ -109,7 +109,10 @@ def _write_report(calls: list[dict], date_str: str) -> str:
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}],
     )
-    return msg.content[0].text.strip()
+    for block in msg.content:
+        if getattr(block, "type", None) == "text":
+            return block.text.strip()
+    return ""
 
 
 def main():
