@@ -14,11 +14,11 @@ def format_duration(sec) -> str:
     return f"{m}:{s:02d}"
 
 
-def format_report(call: dict, analysis: dict, audio_url: str) -> str:
+def format_report(call: dict, analysis: dict, audio_url: str, outbound: bool = False) -> str:
     risk = analysis["risk"]
-    total = analysis["total_score"]
-    max_score = analysis["max_score"]
-    scores = analysis["scores"]
+    total = analysis.get("total_score", 0)
+    max_score = analysis.get("max_score", 0)
+    scores = analysis.get("scores", {})
 
     if risk >= 3:
         icon = "🔴"
@@ -44,40 +44,52 @@ def format_report(call: dict, analysis: dict, audio_url: str) -> str:
     lang_map = {"uk": "🇺🇦 Українська", "ru": "🇷🇺 Російська", "mix": "🌐 Змішана"}
     lang = lang_map.get(analysis.get("language", "uk"), "—")
 
-    booked = analysis.get("booked")
-    if booked is True:
-        booked_str = "📝 Записався"
-    elif booked is False:
-        booked_str = "🚶 НЕ записався"
+    direction_tag = "📤 ВИХІДНИЙ" if outbound else "📥 ВХІДНИЙ"
+
+    if outbound:
+        header = f"{icon} <b>{direction_tag}  |  Ризик: {risk}/3</b>"
     else:
-        booked_str = "❓ Запис нечітко"
-
-    upsell = analysis.get("missed_upsell")
-
-    def mark(val: int) -> str:
-        if val >= 2:
-            return "✅ 2/2"
-        if val == 1:
-            return "⚠️ 1/2"
-        return "❌ 0/2"
+        header = f"{icon} <b>{direction_tag}  |  Бал: {total}/{max_score}  |  Ризик: {risk}/3</b>"
 
     lines = [
-        f"{icon} <b>Бал: {total}/{max_score}  |  Ризик: {risk}/3</b>",
+        header,
         "",
         f"📞 <code>{html.escape(phone)}</code>",
         f"📅 {date_str}  🕐 {time_str}  ⏱ {duration} хв",
         f"👤 Оператор: {html.escape(operator)}",
-        f"{lang}  |  {booked_str}",
-        "",
-        f"📋 {html.escape(analysis['summary'])}",
+        f"{lang}",
     ]
-    if upsell:
-        lines.append("")
-        lines.append(f"💰 <b>Упущено:</b> {html.escape(upsell)}")
+
+    if not outbound:
+        booked = analysis.get("booked")
+        if booked is True:
+            booked_str = "📝 Записався"
+        elif booked is False:
+            booked_str = "🚶 НЕ записався"
+        else:
+            booked_str = "❓ Запис нечітко"
+        lines[-1] = f"{lang}  |  {booked_str}"
+
     lines.append("")
-    lines.append("<b>Чекліст:</b>")
-    for key, desc in CRITERIA:
-        lines.append(f"{mark(scores.get(key, 0))} {html.escape(desc)}")
+    lines.append(f"📋 {html.escape(analysis['summary'])}")
+
+    if not outbound:
+        upsell = analysis.get("missed_upsell")
+        if upsell:
+            lines.append("")
+            lines.append(f"💰 <b>Упущено:</b> {html.escape(upsell)}")
+
+        def mark(val: int) -> str:
+            if val >= 2:
+                return "✅ 2/2"
+            if val == 1:
+                return "⚠️ 1/2"
+            return "❌ 0/2"
+
+        lines.append("")
+        lines.append("<b>Чекліст:</b>")
+        for key, desc in CRITERIA:
+            lines.append(f"{mark(scores.get(key, 0))} {html.escape(desc)}")
 
     if risk > 0:
         lines.append("")

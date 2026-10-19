@@ -22,7 +22,6 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 MIN_DURATION_SECONDS = int(os.getenv("MIN_DURATION_SECONDS", "20"))
 POLL_WINDOW_MINUTES = int(os.getenv("POLL_WINDOW_MINUTES", "15"))
 POLL_INTERVAL_MINUTES = int(os.getenv("POLL_INTERVAL_MINUTES", "10"))
-DIRECTIONS = int(os.getenv("DIRECTIONS", "4"))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_CACHE_DIR = os.path.join(BASE_DIR, "audio_cache")

@@ -16,7 +16,12 @@ import db
 import notify
 from phonet import PhonetClient, ms_now
 from transcribe import transcribe
-from analyze import analyze
+from analyze import analyze, analyze_outbound
+
+
+# Phonet direction codes (based on project config): 4 = incoming, 2 = outgoing
+INCOMING = 4
+OUTGOING = 2
 
 
 logging.basicConfig(
@@ -26,54 +31,78 @@ logging.basicConfig(
 log = logging.getLogger("qc")
 
 
+def _mark_skip(uuid: str, call: dict, kind: str) -> None:
+    db.mark_processed(
+        uuid, ms_now(), -1, -1,
+        call.get("otherLegNum") or "",
+        (call.get("leg") or {}).get("displayName", ""),
+        kind=kind,
+    )
+
+
 def process_call(client: PhonetClient, call: dict) -> None:
     uuid = call["uuid"]
 
     if db.is_processed(uuid):
         return
 
+    direction = call.get("direction")
     bill_secs = call.get("billSecs", 0) or 0
-    if bill_secs < config.MIN_DURATION_SECONDS:
-        log.info("skip %s: too short (%ss)", uuid, bill_secs)
-        db.mark_processed(uuid, ms_now(), -1, -1, call.get("otherLegNum") or "", "")
+    audio_url = call.get("audioRecUrl")
+
+    # Пропущенный входящий — считаем в статистике, не анализируем
+    if direction == INCOMING and (bill_secs == 0 or not audio_url):
+        log.info("missed incoming %s (bill=%ss)", uuid, bill_secs)
+        _mark_skip(uuid, call, "missed")
         return
 
-    audio_url = call.get("audioRecUrl")
+    # Исходящий без ответа — пропускаем
+    if direction == OUTGOING and (bill_secs == 0 or not audio_url):
+        log.info("outgoing no-answer %s (bill=%ss)", uuid, bill_secs)
+        _mark_skip(uuid, call, "no_answer")
+        return
+
+    if bill_secs < config.MIN_DURATION_SECONDS:
+        log.info("skip %s: too short (%ss)", uuid, bill_secs)
+        _mark_skip(uuid, call, "short")
+        return
+
     if not audio_url:
         log.info("skip %s: no audioRecUrl", uuid)
-        db.mark_processed(uuid, ms_now(), -1, -1, call.get("otherLegNum") or "", "")
+        _mark_skip(uuid, call, "no_audio")
         return
 
     audio_path = os.path.join(config.AUDIO_CACHE_DIR, f"{uuid}.mp3")
-    log.info("download %s (%ss)", uuid, bill_secs)
+    log.info("download %s dir=%s (%ss)", uuid, direction, bill_secs)
     if client.download_audio(uuid, audio_path) is None:
         log.info("skip %s: no audio file on server", uuid)
-        db.mark_processed(uuid, ms_now(), -1, -1, call.get("otherLegNum") or "", "")
+        _mark_skip(uuid, call, "no_audio")
         return
 
     log.info("transcribe %s", uuid)
     transcript = transcribe(audio_path)
     if len(transcript) < 20:
         log.info("skip %s: empty transcript", uuid)
-        db.mark_processed(uuid, ms_now(), -1, -1, call.get("otherLegNum") or "", "")
+        _mark_skip(uuid, call, "short")
         try:
             os.remove(audio_path)
         except OSError:
             pass
         return
 
-    log.info("analyze %s", uuid)
-    analysis = analyze(transcript)
+    is_outbound = direction == OUTGOING
+    log.info("analyze %s (%s)", uuid, "OUT" if is_outbound else "IN")
+    analysis = analyze_outbound(transcript) if is_outbound else analyze(transcript)
+    kind = "out" if is_outbound else "in"
 
     log.info(
-        "analyzed %s risk=%s score=%s/%s",
-        uuid, analysis["risk"], analysis["total_score"], analysis["max_score"],
+        "analyzed %s %s risk=%s score=%s/%s",
+        uuid, kind, analysis["risk"], analysis["total_score"], analysis["max_score"],
     )
 
     # Фильтр: в Telegram только риск >= 2 (клиент недоволен/не записался/жалоба)
-    # Риск 0 (ок) и 1 (мелкие недочёты) идут только в дневной отчёт
     if analysis["risk"] >= 2:
-        notify.send(notify.format_report(call, analysis, audio_url))
+        notify.send(notify.format_report(call, analysis, audio_url, outbound=is_outbound))
         log.info("sent to telegram (risk=%d)", analysis["risk"])
     else:
         log.info("risk=%d, only daily report", analysis["risk"])
@@ -90,9 +119,9 @@ def process_call(client: PhonetClient, call: dict) -> None:
         reason=analysis.get("reason", ""),
         booked=analysis.get("booked"),
         missed_upsell=analysis.get("missed_upsell"),
+        kind=kind,
     )
 
-    # кэш не копим, после отправки чистим
     try:
         os.remove(audio_path)
     except OSError:
@@ -103,15 +132,11 @@ def run_once() -> None:
     client = PhonetClient()
     now = ms_now()
     time_from = now - config.POLL_WINDOW_MINUTES * 60 * 1000
-    log.info(
-        "poll window: last %s min, directions=%s",
-        config.POLL_WINDOW_MINUTES,
-        config.DIRECTIONS,
-    )
+    log.info("poll window: last %s min, all directions", config.POLL_WINDOW_MINUTES)
     calls = client.list_company_calls(
         time_from_ms=time_from,
         time_to_ms=now,
-        directions=config.DIRECTIONS,
+        directions=None,  # все направления: входящие + исходящие + пропущенные
     )
     log.info("got %s calls", len(calls))
     for call in calls:

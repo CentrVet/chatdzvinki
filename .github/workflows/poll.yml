@@ -37,7 +37,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MIN_DURATION_SECONDS: "20"
           POLL_WINDOW_MINUTES: "20"
-          DIRECTIONS: "4"
         run: python main.py
 
       - name: Commit processed.db

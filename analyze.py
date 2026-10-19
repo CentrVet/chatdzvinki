@@ -118,6 +118,78 @@ def _build_prompt(transcript: str) -> str:
     )
 
 
+OUTBOUND_PROMPT = """Ти контролер якості колл-центру ветклініки "Центр". Нижче — транскрипт ВИХІДНОГО дзвінка: адміністратор телефонує клієнту (нагадування про прийом, передзвін із результатами, підтвердження запису, тощо).
+
+ВАЖЛИВО про транскрипт: автоматичний (Whisper), з помилками у іменах, цифрах і медичних термінах. Не додумуй деталей, яких немає в тексті.
+
+Твоя задача — виявити ЧЕРВОНІ ПРАПОРЦІ. Не оцінюй дрібниці — тільки те, що може зіпсувати стосунки з клієнтом або репутацію клініки.
+
+Шукай:
+- Клієнт роздратований, лається, скаржиться
+- Адміністратор говорить грубо, перебиває, роздратованим тоном
+- Дав неправдиву або некоректну медичну інформацію (адмін не має пояснювати діагнози)
+- Пообіцяв те, чого не може виконати (ціну, час, лікаря, прогноз)
+- Клієнт відмовився від запису або сказав що піде в іншу клініку
+- Повідомив важку новину (діагноз, скасування прийому, ціна) без емпатії
+- Не підтвердив ключові деталі (дата/час/лікар при підтвердженні запису)
+- Обірвав розмову, не попрощався
+
+Відповідай ТІЛЬКИ JSON без markdown:
+{{"summary": "2-3 речення: мета дзвінка, як відреагував клієнт, чим скінчилось. Тільки те, що чітко чути",
+ "risk": 0|1|2|3,
+ "language": "uk"|"ru"|"mix",
+ "reason": "якщо risk > 0 — чому саме, з цитатами. Якщо risk=0 — коротко чому все ок",
+ "fix": "якщо risk > 0 — КОНКРЕТНА дія для цієї ситуації (передзвонити, вибачитись, уточнити). Якщо risk=0 — 'все добре, дій не потрібно'"}}
+
+Шкала ризику:
+- 0 = все добре, клієнт нормально сприйняв, запис підтверджено / інформацію передано коректно
+- 1 = дрібні недоліки (сухий тон, не повторив деталі, не попрощався)
+- 2 = клієнт незадоволений / відмовився / адмін дав некоректну інформацію
+- 3 = скандал, скарга, клієнт йде, адмін був грубий, обіцяна неправда
+
+Транскрипт:
+{transcript}
+"""
+
+
+def _extract_text(msg) -> str:
+    for b in msg.content:
+        if getattr(b, "type", None) == "text":
+            return b.text.strip()
+    return ""
+
+
+def _parse_json(text: str) -> dict:
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    return json.loads(text)
+
+
+def analyze_outbound(transcript: str) -> dict:
+    """Анализ исходящего звонка — только красные флаги, без 9 критериев."""
+    client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    msg = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=1200,
+        messages=[{"role": "user", "content": OUTBOUND_PROMPT.format(transcript=transcript)}],
+    )
+    data = _parse_json(_extract_text(msg))
+    data["risk"] = max(0, min(3, int(data.get("risk", 0))))
+    data["language"] = data.get("language", "uk")
+    for k in ("summary", "reason", "fix"):
+        data.setdefault(k, "")
+    # для совместимости с общей схемой
+    data["scores"] = {}
+    data["total_score"] = 0
+    data["max_score"] = 0
+    data["booked"] = None
+    data["missed_upsell"] = None
+    return data
+
+
 def analyze(transcript: str) -> dict:
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
     msg = client.messages.create(
@@ -125,13 +197,7 @@ def analyze(transcript: str) -> dict:
         max_tokens=1500,
         messages=[{"role": "user", "content": _build_prompt(transcript)}],
     )
-    text = msg.content[0].text.strip()
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
-    data = json.loads(text)
+    data = _parse_json(_extract_text(msg))
 
     # нормализация
     scores = data.get("scores", {}) or {}

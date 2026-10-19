@@ -27,6 +27,10 @@ def _migrate(conn):
         ("reason", "ALTER TABLE processed ADD COLUMN reason TEXT"),
         ("booked", "ALTER TABLE processed ADD COLUMN booked INTEGER"),  # 1/0/-1(null)
         ("missed_upsell", "ALTER TABLE processed ADD COLUMN missed_upsell TEXT"),
+        # kind: "in" (вх. проанализирован), "out" (исх. проанализирован),
+        #       "missed" (вх. пропущен), "no_answer" (исх. без ответа),
+        #       "short" (слишком короткий), "no_audio" (нет записи)
+        ("kind", "ALTER TABLE processed ADD COLUMN kind TEXT"),
     ]:
         if col not in cols:
             conn.execute(ddl)
@@ -52,30 +56,44 @@ def is_processed(uuid: str) -> bool:
 
 def mark_processed(uuid: str, processed_at: int, risk: int, score: int, phone: str,
                    operator: str, max_score: int = 0, summary: str = "", reason: str = "",
-                   booked=None, missed_upsell=None):
+                   booked=None, missed_upsell=None, kind: str = ""):
     booked_i = -1 if booked is None else (1 if booked else 0)
     with connect() as c:
         c.execute(
             """INSERT OR REPLACE INTO processed
                (uuid, processed_at, risk, score, max_score, phone, operator, summary, reason,
-                booked, missed_upsell)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                booked, missed_upsell, kind)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (uuid, processed_at, risk, score, max_score, phone, operator, summary, reason,
-             booked_i, missed_upsell),
+             booked_i, missed_upsell, kind),
         )
 
 
+COLS = ["uuid", "processed_at", "risk", "score", "max_score", "phone", "operator",
+        "summary", "reason", "booked", "missed_upsell", "kind"]
+
+
 def get_today_calls(start_ms: int, end_ms: int) -> list[dict]:
-    """Все звонки, обработанные сегодня (risk != -1 — не пропущенные)."""
+    """Проанализированные за день звонки (входящие+исходящие с риском >= 0)."""
     with connect() as c:
         rows = c.execute(
-            """SELECT uuid, processed_at, risk, score, max_score, phone, operator, summary, reason,
-                      booked, missed_upsell
-               FROM processed
-               WHERE processed_at BETWEEN ? AND ? AND risk >= 0
-               ORDER BY risk DESC, score ASC""",
+            f"""SELECT {', '.join(COLS)}
+                FROM processed
+                WHERE processed_at BETWEEN ? AND ? AND risk >= 0
+                ORDER BY risk DESC, score ASC""",
             (start_ms, end_ms),
         ).fetchall()
-    cols = ["uuid", "processed_at", "risk", "score", "max_score", "phone", "operator",
-            "summary", "reason", "booked", "missed_upsell"]
-    return [dict(zip(cols, r)) for r in rows]
+    return [dict(zip(COLS, r)) for r in rows]
+
+
+def get_today_missed(start_ms: int, end_ms: int) -> list[dict]:
+    """Пропущенные входящие за день."""
+    with connect() as c:
+        rows = c.execute(
+            f"""SELECT {', '.join(COLS)}
+                FROM processed
+                WHERE processed_at BETWEEN ? AND ? AND kind = 'missed'
+                ORDER BY processed_at DESC""",
+            (start_ms, end_ms),
+        ).fetchall()
+    return [dict(zip(COLS, r)) for r in rows]

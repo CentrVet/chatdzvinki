@@ -2,7 +2,7 @@
 
 Запуск: python daily_report.py
 """
-import html
+from collections import Counter
 from datetime import datetime, time, timedelta, timezone
 
 from anthropic import Anthropic
@@ -20,87 +20,129 @@ REPORT_PROMPT = """Ти керівник кол-центру ветклінік�
 Структура звіту (HTML-теги <b>, <i>, <code>, можна emoji):
 
 <b>📊 Загальна картина</b>
-2-3 речення: як пройшов день, настрій оцінки (сильний / середній / слабкий день), в порівнянні зі стандартом.
+2-3 речення: як пройшов день — вхідні + вихідні + пропущені разом. Загальний настрій (сильний / середній / слабкий день).
+
+<b>📞 Пропущені дзвінки</b>
+Якщо є: загальна кількість, пікові години (якщо помітно скупчення), 1-2 речення чому це проблема. Якщо немає — пропустити блок.
 
 <b>🎯 Головне</b>
 3-5 буллетів з найважливішим: що ламається системно, у кого провали, де втрачаються гроші. Будь конкретним: імена операторів, цифри.
 
-<b>🚨 Слиті клієнти</b>
-Список тих, хто не записався або був незадоволений. Для кожного: телефон, оператор, 1 речення в чому проблема, що робити (передзвонити? які слова?).
+<b>🚨 Слиті клієнти (вхідні)</b>
+Список тих, хто не записався або був незадоволений. Для кожного: телефон, оператор, 1 речення в чому проблема, що робити.
+
+<b>📤 Вихідні з червоними прапорцями</b>
+Якщо є вихідні з risk >= 2 — список: телефон, оператор, 1 речення що сталось, що робити. Якщо все ок — одна фраза "вихідні без проблем".
 
 <b>💰 Упущені допродажі</b>
-Якщо є — список коротко.
+Тільки якщо є (вхідні з missed_upsell).
 
 <b>👥 По операторах</b>
-Якщо кілька операторів — коротко по кожному: сильні/слабкі сторони, конкретна порада на завтра.
+По кожному: вхідні/вихідні окремо, сильні/слабкі сторони, конкретна порада на завтра.
 
 <b>✅ Що зробити керівнику</b>
-2-3 конкретні дії на найближчий день. Не загальні ("покращити якість"), а конкретні ("з Оксаною розібрати дзвінок XXXXX — не повторила деталі запису").
+2-3 конкретні дії на найближчий день.
 
 Правила:
-- Пиши живою українською, як людина керівнику, а не як робот
-- Якщо день без проблем — так і скажи, не вигадуй проблем
-- Не повторюй очевидне ("було 10 дзвінків" — це вже в заголовку)
+- Пиши живою українською, як людина керівнику
+- Не вигадуй проблем якщо день без проблем
 - Короткі речення. Без води.
 - Телефони в <code>+380...</code>
 
 Дані:
 Дата: {date}
-Всього дзвінків: {total}
+
+ВХІДНІ (проаналізовано: {in_total})
 Записались: {booked}, не записались: {not_booked}, нечітко: {unclear}
 Середній бал: {avg_pct}
-Ризики: 🟢 {r0} / 🟡 {r1} / 🟠 {r2} / 🔴 {r3}
+Ризики: 🟢 {in_r0} / 🟡 {in_r1} / 🟠 {in_r2} / 🔴 {in_r3}
 
-Звінки:
-{calls_json}
+ВИХІДНІ (проаналізовано: {out_total})
+Ризики: 🟢 {out_r0} / 🟡 {out_r1} / 🟠 {out_r2} / 🔴 {out_r3}
+
+ПРОПУЩЕНІ ВХІДНІ: {missed_total}
+Розподіл по годинах (Київ): {missed_hours}
+
+Вхідні звінки:
+{in_calls}
+
+Вихідні звінки:
+{out_calls}
+
+Приклади номерів пропущених (до 10):
+{missed_phones}
 """
 
 
-def _build_calls_data(calls: list[dict]) -> str:
-    lines = []
-    for c in calls:
-        pct = (c["score"] / c["max_score"] * 100) if c.get("max_score") else 0
-        booked_str = {1: "так", 0: "ні", -1: "нечітко", None: "нечітко"}.get(c.get("booked"), "нечітко")
-        parts = [
-            f"— [risk={c['risk']}, {c['score']}/{c['max_score']} ({pct:.0f}%), booked={booked_str}]",
-            f"  тел: {c.get('phone') or '—'}, оператор: {c.get('operator') or '—'}",
-            f"  summary: {c.get('summary') or '—'}",
-        ]
-        if c.get("reason"):
-            parts.append(f"  reason: {c['reason']}")
-        if c.get("missed_upsell"):
-            parts.append(f"  missed_upsell: {c['missed_upsell']}")
-        lines.append("\n".join(parts))
-    return "\n\n".join(lines)
+def _in_call_str(c: dict) -> str:
+    pct = (c["score"] / c["max_score"] * 100) if c.get("max_score") else 0
+    booked_str = {1: "так", 0: "ні", -1: "нечітко", None: "нечітко"}.get(c.get("booked"), "нечітко")
+    parts = [
+        f"— [risk={c['risk']}, {c['score']}/{c['max_score']} ({pct:.0f}%), booked={booked_str}]",
+        f"  тел: {c.get('phone') or '—'}, оператор: {c.get('operator') or '—'}",
+        f"  summary: {c.get('summary') or '—'}",
+    ]
+    if c.get("reason"):
+        parts.append(f"  reason: {c['reason']}")
+    if c.get("missed_upsell"):
+        parts.append(f"  missed_upsell: {c['missed_upsell']}")
+    return "\n".join(parts)
 
 
-def _write_report(calls: list[dict], date_str: str) -> str:
-    total = len(calls)
-    booked = sum(1 for c in calls if c.get("booked") == 1)
-    not_booked = sum(1 for c in calls if c.get("booked") == 0)
-    unclear = total - booked - not_booked
+def _out_call_str(c: dict) -> str:
+    parts = [
+        f"— [risk={c['risk']}]",
+        f"  тел: {c.get('phone') or '—'}, оператор: {c.get('operator') or '—'}",
+        f"  summary: {c.get('summary') or '—'}",
+    ]
+    if c.get("reason"):
+        parts.append(f"  reason: {c['reason']}")
+    return "\n".join(parts)
 
-    scored = [c for c in calls if c.get("max_score", 0) > 0]
+
+def _write_report(incoming: list[dict], outgoing: list[dict], missed: list[dict], date_str: str) -> str:
+    booked = sum(1 for c in incoming if c.get("booked") == 1)
+    not_booked = sum(1 for c in incoming if c.get("booked") == 0)
+    unclear = len(incoming) - booked - not_booked
+
+    scored = [c for c in incoming if c.get("max_score", 0) > 0]
     avg_pct = (
         f"{sum(c['score'] / c['max_score'] for c in scored) / len(scored) * 100:.0f}%"
         if scored else "—"
     )
 
-    r = [0, 0, 0, 0]
-    for c in calls:
-        risk = c.get("risk", 0)
-        if 0 <= risk <= 3:
-            r[risk] += 1
+    in_r = [0, 0, 0, 0]
+    for c in incoming:
+        if 0 <= c.get("risk", 0) <= 3:
+            in_r[c["risk"]] += 1
+    out_r = [0, 0, 0, 0]
+    for c in outgoing:
+        if 0 <= c.get("risk", 0) <= 3:
+            out_r[c["risk"]] += 1
+
+    # Распределение пропущенных по часам
+    hours = Counter()
+    for c in missed:
+        dt = datetime.fromtimestamp(c["processed_at"] / 1000, tz=KYIV_TZ)
+        hours[dt.hour] += 1
+    missed_hours = (
+        ", ".join(f"{h:02d}:00→{n}" for h, n in sorted(hours.items())) or "—"
+    )
+    missed_phones = "\n".join(f"— {c.get('phone') or '—'}" for c in missed[:10]) or "—"
 
     prompt = REPORT_PROMPT.format(
         date=date_str,
-        total=total,
-        booked=booked,
-        not_booked=not_booked,
-        unclear=unclear,
+        in_total=len(incoming),
+        booked=booked, not_booked=not_booked, unclear=unclear,
         avg_pct=avg_pct,
-        r0=r[0], r1=r[1], r2=r[2], r3=r[3],
-        calls_json=_build_calls_data(calls),
+        in_r0=in_r[0], in_r1=in_r[1], in_r2=in_r[2], in_r3=in_r[3],
+        out_total=len(outgoing),
+        out_r0=out_r[0], out_r1=out_r[1], out_r2=out_r[2], out_r3=out_r[3],
+        missed_total=len(missed),
+        missed_hours=missed_hours,
+        in_calls="\n\n".join(_in_call_str(c) for c in incoming) or "—",
+        out_calls="\n\n".join(_out_call_str(c) for c in outgoing) or "—",
+        missed_phones=missed_phones,
     )
 
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -123,14 +165,21 @@ def main():
     end_ms = int(now.timestamp() * 1000)
 
     calls = db.get_today_calls(start_ms, end_ms)
+    missed = db.get_today_missed(start_ms, end_ms)
     date_str = now.strftime("%d.%m.%Y")
 
-    if not calls:
-        notify.send(f"📊 <b>Підсумки за {date_str}</b>\n\nЗа сьогодні проаналізованих дзвінків немає.")
+    incoming = [c for c in calls if c.get("kind") in ("in", None, "")]  # None/"" — старые записи до миграции
+    outgoing = [c for c in calls if c.get("kind") == "out"]
+
+    if not calls and not missed:
+        notify.send(f"📊 <b>Підсумки за {date_str}</b>\n\nЗа сьогодні активності не було.")
         return
 
-    header = f"📊 <b>Підсумки за {date_str}</b>  ·  {len(calls)} дзвінків\n\n"
-    body = _write_report(calls, date_str)
+    header = (
+        f"📊 <b>Підсумки за {date_str}</b>  ·  "
+        f"📥{len(incoming)}  📤{len(outgoing)}  📞×{len(missed)}\n\n"
+    )
+    body = _write_report(incoming, outgoing, missed, date_str)
     notify.send(header + body)
 
 
