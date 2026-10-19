@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+audio_cache/
+models/
+venv/
+.venv/
+ffmpeg/
+*.log
+*.err
+# processed.db намеренно НЕ игнорируем — хранится в репо как состояние
