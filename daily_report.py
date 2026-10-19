@@ -106,13 +106,14 @@ def _write_report(calls: list[dict], date_str: str) -> str:
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
     msg = client.messages.create(
         model="claude-sonnet-5-5",
-        max_tokens=3000,
+        max_tokens=8000,
         messages=[{"role": "user", "content": prompt}],
     )
-    for block in msg.content:
-        if getattr(block, "type", None) == "text":
-            return block.text.strip()
-    return ""
+    parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
+    text = "\n".join(parts).strip()
+    if not text:
+        return f"(звіт не згенеровано, stop_reason={msg.stop_reason})"
+    return text
 
 
 def main():
