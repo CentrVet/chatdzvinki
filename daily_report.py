@@ -105,7 +105,7 @@ def _write_report(calls: list[dict], date_str: str) -> str:
 
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
     msg = client.messages.create(
-        model="claude-sonnet-4-5",
+        model="claude-sonnet-5-5",
         max_tokens=3000,
         messages=[{"role": "user", "content": prompt}],
     )
