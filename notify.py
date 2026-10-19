@@ -98,6 +98,12 @@ def format_report(call: dict, analysis: dict, audio_url: str, outbound: bool = F
 
     lines.append("")
     lines.append(f'🎧 <a href="{audio_url}">Прослухати запис</a>')
+    lines.append("")
+    lines.append(
+        f'<i>Відповідь на це повідомлення (reply) буде записано '
+        f'як "не проблема, причина: ваш текст" й виключить дзвінок з майбутніх звітів.</i>'
+    )
+    lines.append(f'<code>#id:{call["uuid"]}</code>')
     return "\n".join(lines)
 
 

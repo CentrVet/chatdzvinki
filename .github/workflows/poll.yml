@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "*/10 * * * *"
   workflow_dispatch:
+    inputs:
+      poll_minutes:
+        description: "За сколько минут назад тянуть звонки (по умолчанию 60)"
+        required: false
+        default: "60"
 
 concurrency:
   group: poll
@@ -27,6 +32,17 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
+      - name: Process telegram commands
+        env:
+          PHONET_DOMAIN: ${{ secrets.PHONET_DOMAIN }}
+          PHONET_API_KEY: ${{ secrets.PHONET_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MIN_DURATION_SECONDS: "20"
+        run: python commands.py
+
       - name: Run bot
         env:
           PHONET_DOMAIN: ${{ secrets.PHONET_DOMAIN }}
@@ -36,17 +52,17 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MIN_DURATION_SECONDS: "20"
-          POLL_WINDOW_MINUTES: "60"
+          POLL_WINDOW_MINUTES: ${{ github.event.inputs.poll_minutes || '60' }}
         run: python main.py
 
-      - name: Commit processed.db
+      - name: Commit state
         run: |
           git config user.name "qc-bot"
           git config user.email "qc-bot@users.noreply.github.com"
-          if [[ -n "$(git status --porcelain processed.db)" ]]; then
-            git add processed.db
-            git commit -m "state: update processed.db"
-            git push
-          else
+          git add processed.db tg_offset.txt 2>/dev/null || true
+          if git diff --cached --quiet; then
             echo "no changes"
+          else
+            git commit -m "state: update"
+            git push
           fi

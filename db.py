@@ -31,6 +31,9 @@ def _migrate(conn):
         #       "missed" (вх. пропущен), "no_answer" (исх. без ответа),
         #       "short" (слишком короткий), "no_audio" (нет записи)
         ("kind", "ALTER TABLE processed ADD COLUMN kind TEXT"),
+        # dismissed: причина, по которой пользователь пометил звонок как "не проблема".
+        # NULL = активный, не-NULL = исключать из отчётов.
+        ("dismissed", "ALTER TABLE processed ADD COLUMN dismissed TEXT"),
     ]:
         if col not in cols:
             conn.execute(ddl)
@@ -70,20 +73,27 @@ def mark_processed(uuid: str, processed_at: int, risk: int, score: int, phone: s
 
 
 COLS = ["uuid", "processed_at", "risk", "score", "max_score", "phone", "operator",
-        "summary", "reason", "booked", "missed_upsell", "kind"]
+        "summary", "reason", "booked", "missed_upsell", "kind", "dismissed"]
 
 
-def get_today_calls(start_ms: int, end_ms: int) -> list[dict]:
-    """Проанализированные за день звонки (входящие+исходящие с риском >= 0)."""
+def get_today_calls(start_ms: int, end_ms: int, include_dismissed: bool = False) -> list[dict]:
+    """Проанализированные за день звонки (входящие+исходящие с риском >= 0).
+    По умолчанию исключает dismissed (помеченные как "не проблема")."""
+    extra = "" if include_dismissed else " AND dismissed IS NULL"
     with connect() as c:
         rows = c.execute(
             f"""SELECT {', '.join(COLS)}
                 FROM processed
-                WHERE processed_at BETWEEN ? AND ? AND risk >= 0
+                WHERE processed_at BETWEEN ? AND ? AND risk >= 0{extra}
                 ORDER BY risk DESC, score ASC""",
             (start_ms, end_ms),
         ).fetchall()
     return [dict(zip(COLS, r)) for r in rows]
+
+
+def set_dismissed(uuid: str, reason: str) -> None:
+    with connect() as c:
+        c.execute("UPDATE processed SET dismissed = ? WHERE uuid = ?", (reason, uuid))
 
 
 def get_today_missed(start_ms: int, end_ms: int) -> list[dict]:
