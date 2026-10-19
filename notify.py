@@ -89,16 +89,39 @@ def format_report(call: dict, analysis: dict, audio_url: str) -> str:
     return "\n".join(lines)
 
 
+TG_LIMIT = 4000  # запас от 4096
+
+
+def _split(text: str) -> list[str]:
+    """Делит длинный текст по границам абзацев/строк, не ломая HTML-теги в середине."""
+    if len(text) <= TG_LIMIT:
+        return [text]
+    parts = []
+    rest = text
+    while len(rest) > TG_LIMIT:
+        cut = rest.rfind("\n\n", 0, TG_LIMIT)
+        if cut < TG_LIMIT // 2:
+            cut = rest.rfind("\n", 0, TG_LIMIT)
+        if cut < TG_LIMIT // 2:
+            cut = TG_LIMIT
+        parts.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    if rest:
+        parts.append(rest)
+    return parts
+
+
 def send(text: str) -> None:
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-    r = requests.post(
-        url,
-        json={
-            "chat_id": config.TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=15,
-    )
-    r.raise_for_status()
+    for part in _split(text):
+        r = requests.post(
+            url,
+            json={
+                "chat_id": config.TELEGRAM_CHAT_ID,
+                "text": part,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
