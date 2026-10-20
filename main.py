@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import traceback
+from datetime import datetime
 
 import config
 import db
@@ -138,7 +139,25 @@ def process_call(client: PhonetClient, call: dict) -> None:
         pass
 
 
+def is_quiet_hours(now: datetime | None = None) -> bool:
+    now = now or datetime.now()
+    start = config.QUIET_HOURS_START
+    end = config.QUIET_HOURS_END
+    h = now.hour
+    if start == end:
+        return False
+    if start < end:
+        return start <= h < end
+    return h >= start or h < end
+
+
 def run_once() -> None:
+    if is_quiet_hours():
+        log.info(
+            "quiet hours (%02d:00-%02d:00), skip",
+            config.QUIET_HOURS_START, config.QUIET_HOURS_END,
+        )
+        return
     client = PhonetClient()
     now = ms_now()
     time_from = now - config.POLL_WINDOW_MINUTES * 60 * 1000

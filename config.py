@@ -23,6 +23,10 @@ MIN_DURATION_SECONDS = int(os.getenv("MIN_DURATION_SECONDS", "20"))
 POLL_WINDOW_MINUTES = int(os.getenv("POLL_WINDOW_MINUTES", "15"))
 POLL_INTERVAL_MINUTES = int(os.getenv("POLL_INTERVAL_MINUTES", "10"))
 
+# Тихие часы: КЦ не работает, звонки не проверяем (локальное время, час 0-23)
+QUIET_HOURS_START = int(os.getenv("QUIET_HOURS_START", "22"))
+QUIET_HOURS_END = int(os.getenv("QUIET_HOURS_END", "8"))
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUDIO_CACHE_DIR = os.path.join(BASE_DIR, "audio_cache")
 DB_PATH = os.path.join(BASE_DIR, "processed.db")
