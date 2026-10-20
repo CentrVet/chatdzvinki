@@ -47,7 +47,8 @@ def process_call(client: PhonetClient, call: dict) -> None:
     if db.is_processed(uuid):
         return
 
-    direction = call.get("direction")
+    # Phonet возвращает направление в поле lgDirection (поле direction = null)
+    direction = call.get("lgDirection") or call.get("direction")
     bill_secs = call.get("billSecs", 0) or 0
     audio_url = call.get("audioRecUrl")
 
