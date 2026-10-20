@@ -34,6 +34,9 @@ def _migrate(conn):
         # dismissed: причина, по которой пользователь пометил звонок как "не проблема".
         # NULL = активный, не-NULL = исключать из отчётов.
         ("dismissed", "ALTER TABLE processed ADD COLUMN dismissed TEXT"),
+        # source: звідки клієнт дізнався про клініку (google, instagram, рекомендація, тощо).
+        # NULL = не було в розмові або повторний клієнт.
+        ("source", "ALTER TABLE processed ADD COLUMN source TEXT"),
     ]:
         if col not in cols:
             conn.execute(ddl)
@@ -59,21 +62,21 @@ def is_processed(uuid: str) -> bool:
 
 def mark_processed(uuid: str, processed_at: int, risk: int, score: int, phone: str,
                    operator: str, max_score: int = 0, summary: str = "", reason: str = "",
-                   booked=None, missed_upsell=None, kind: str = ""):
+                   booked=None, missed_upsell=None, kind: str = "", source: str | None = None):
     booked_i = -1 if booked is None else (1 if booked else 0)
     with connect() as c:
         c.execute(
             """INSERT OR REPLACE INTO processed
                (uuid, processed_at, risk, score, max_score, phone, operator, summary, reason,
-                booked, missed_upsell, kind)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                booked, missed_upsell, kind, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (uuid, processed_at, risk, score, max_score, phone, operator, summary, reason,
-             booked_i, missed_upsell, kind),
+             booked_i, missed_upsell, kind, source),
         )
 
 
 COLS = ["uuid", "processed_at", "risk", "score", "max_score", "phone", "operator",
-        "summary", "reason", "booked", "missed_upsell", "kind", "dismissed"]
+        "summary", "reason", "booked", "missed_upsell", "kind", "dismissed", "source"]
 
 
 def get_today_calls(start_ms: int, end_ms: int, include_dismissed: bool = False) -> list[dict]:

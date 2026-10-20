@@ -132,6 +132,7 @@ def process_call(client: PhonetClient, call: dict) -> None:
         booked=analysis.get("booked"),
         missed_upsell=analysis.get("missed_upsell"),
         kind=kind,
+        source=analysis.get("source"),
     )
 
     try:
