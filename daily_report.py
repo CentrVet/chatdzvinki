@@ -1,9 +1,12 @@
 """Дневной отчёт — Claude Sonnet анализирует все звонки за день и пишет связный текст.
 
-Запуск: python daily_report.py
+Запуск: python daily_report.py            # за сьогодні
+        python daily_report.py --yesterday
+        python daily_report.py --date 2026-10-19
 """
+import argparse
 from collections import Counter
-from datetime import datetime, time, timedelta, timezone
+from datetime import date as date_cls, datetime, time, timedelta, timezone
 
 from anthropic import Anthropic
 
@@ -151,7 +154,7 @@ def _write_report(incoming: list[dict], outgoing: list[dict], missed: list[dict]
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
     msg = client.messages.create(
         model="claude-sonnet-5-5",
-        max_tokens=8000,
+        max_tokens=16000,
         messages=[{"role": "user", "content": prompt}],
     )
     parts = [b.text for b in msg.content if getattr(b, "type", None) == "text"]
@@ -162,14 +165,28 @@ def _write_report(incoming: list[dict], outgoing: list[dict], missed: list[dict]
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--yesterday", action="store_true")
+    parser.add_argument("--date", help="YYYY-MM-DD")
+    args = parser.parse_args()
+
     now = datetime.now(KYIV_TZ)
-    start = datetime.combine(now.date(), time(0, 0), tzinfo=KYIV_TZ)
+    if args.date:
+        target = date_cls.fromisoformat(args.date)
+    elif args.yesterday:
+        target = (now - timedelta(days=1)).date()
+    else:
+        target = now.date()
+    start = datetime.combine(target, time(0, 0), tzinfo=KYIV_TZ)
+    end = start + timedelta(days=1)
+    if end > now:
+        end = now
     start_ms = int(start.timestamp() * 1000)
-    end_ms = int(now.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
 
     calls = db.get_today_calls(start_ms, end_ms)  # dismissed уже исключены
     missed = db.get_today_missed(start_ms, end_ms)
-    date_str = now.strftime("%d.%m.%Y")
+    date_str = target.strftime("%d.%m.%Y")
 
     incoming = [c for c in calls if c.get("kind") in ("in", None, "")]
     outgoing = [c for c in calls if c.get("kind") == "out"]
