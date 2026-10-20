@@ -5,7 +5,8 @@
         python daily_report.py --date 2026-10-19
 """
 import argparse
-from collections import Counter
+import sqlite3
+from collections import Counter, defaultdict
 from datetime import date as date_cls, datetime, time, timedelta, timezone
 
 from anthropic import Anthropic
@@ -55,7 +56,10 @@ REPORT_PROMPT = """Ти керівник кол-центру ветклінік�
 - Лікарі передзвонюють клієнтам у вільний момент протягом дня — це нормально. Клієнта, який чекає передзвону, не вважай слитим і не пиши "домогтися дзвінка сьогодні". Пиши "передати лікарю нагадування, зв'яжеться у вільний момент" або "уточнити у лікаря, коли він планує передзвін".
 - Чесна відмова адміна ("сьогодні не можемо", "спочатку УЗД, потім процедура") — ПРОФЕСІЙНА поведінка, не слив клієнта. Не включай таких клієнтів у "слиті", не пиши "повернути". Якщо хочеш згадати — у позитивному ключі ("адмін чесно скерував клієнта на правильний шлях").
 - НЕ рекомендуй дій, які клініка не може гарантувати ("їдьте зараз", "перенести на раніше"). Пиши "передзвонити й уточнити реальний найкоротший час".
-- Передзвін міг відбутись оффлайн (viber, особисто) — бот бачить тільки Phonet. НЕ пиши впевнено "передзвін висить" чи "адмін не передзвонив". Формулюй: "за даними бота передзвін не зафіксовано — уточнити у [оператор], чи зв'язувались".
+- Для кожного ризикового або незаписаного дзвінка в даних є поле "передзвін:" — бот перевірив, чи був вихідний з клініки на цей номер пізніше того ж дня.
+  * Якщо "передзвонювали" — НЕ пиши "передзвонити клієнту", передзвін вже був. Пиши про результат ("перевірити результат передзвону" якщо треба).
+  * Якщо "НЕ передзвонювали (за даними бота)" — це тільки по Phonet. Передзвін міг бути через viber/особисто. Формулюй: "за даними бота передзвін не зафіксовано — уточнити у [оператор], чи зв'язувались іншим каналом".
+  * Пропущені дзвінки — так само: поряд із номером у списку є мітка про передзвін.
 - Якщо клієнт має 2+ скарги поспіль і фрази типу "більше не звертатимусь" — не став це головною рекомендацією керівнику "повернути". Такого клієнта не завжди можна і треба повертати. Формулюй: "зафіксувати, за можливості — одноразовий жест (вибачення/компенсація), але не вкладати ресурс у повернення".
 
 Дані:
@@ -83,7 +87,44 @@ REPORT_PROMPT = """Ти керівник кол-центру ветклінік�
 """
 
 
-def _in_call_str(c: dict) -> str:
+def _norm_phone(p: str | None) -> str:
+    """Нормалізація: тільки цифри, останні 10 (щоб +380XX і 0XX співпадали)."""
+    if not p:
+        return ""
+    digits = "".join(ch for ch in p if ch.isdigit())
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+def _get_outbound_attempts(start_ms: int, end_ms: int) -> dict[str, list[int]]:
+    """phone (нормалізований) → список timestamps усіх ВИХІДНИХ спроб за день
+    (успішні 'out' + без відповіді 'no_answer'). Для перевірки "передзвонили чи ні"."""
+    attempts: dict[str, list[int]] = defaultdict(list)
+    with sqlite3.connect(config.DB_PATH) as c:
+        rows = c.execute(
+            """SELECT phone, processed_at FROM processed
+               WHERE processed_at BETWEEN ? AND ?
+                 AND kind IN ('out', 'no_answer')""",
+            (start_ms, end_ms),
+        ).fetchall()
+    for phone, ts in rows:
+        p = _norm_phone(phone)
+        if p:
+            attempts[p].append(ts)
+    return attempts
+
+
+def _callback_status(phone: str | None, after_ts: int, attempts: dict[str, list[int]]) -> str:
+    """Чи був вихідний на цей номер ПІСЛЯ вказаного моменту."""
+    p = _norm_phone(phone)
+    if not p:
+        return "немає номера"
+    later = [t for t in attempts.get(p, []) if t > after_ts]
+    if not later:
+        return "НЕ передзвонювали (за даними бота)"
+    return f"передзвонювали ({len(later)} раз)"
+
+
+def _in_call_str(c: dict, callbacks: dict[str, list[int]]) -> str:
     pct = (c["score"] / c["max_score"] * 100) if c.get("max_score") else 0
     booked_str = {1: "так", 0: "ні", -1: "нечітко", None: "нечітко"}.get(c.get("booked"), "нечітко")
     parts = [
@@ -95,6 +136,9 @@ def _in_call_str(c: dict) -> str:
         parts.append(f"  reason: {c['reason']}")
     if c.get("missed_upsell"):
         parts.append(f"  missed_upsell: {c['missed_upsell']}")
+    # Для ризикових або не записаних — показуємо чи був передзвін
+    if c.get("risk", 0) >= 2 or c.get("booked") == 0:
+        parts.append(f"  передзвін: {_callback_status(c.get('phone'), c.get('processed_at', 0), callbacks)}")
     return "\n".join(parts)
 
 
@@ -109,7 +153,8 @@ def _out_call_str(c: dict) -> str:
     return "\n".join(parts)
 
 
-def _write_report(incoming: list[dict], outgoing: list[dict], missed: list[dict], date_str: str) -> str:
+def _write_report(incoming: list[dict], outgoing: list[dict], missed: list[dict],
+                  date_str: str, callbacks: dict[str, list[int]]) -> str:
     booked = sum(1 for c in incoming if c.get("booked") == 1)
     not_booked = sum(1 for c in incoming if c.get("booked") == 0)
     unclear = len(incoming) - booked - not_booked
@@ -136,7 +181,10 @@ def _write_report(incoming: list[dict], outgoing: list[dict], missed: list[dict]
     missed_hours = (
         ", ".join(f"{h:02d}:00→{n}" for h, n in sorted(hours.items())) or "—"
     )
-    missed_phones = "\n".join(f"— {c.get('phone') or '—'}" for c in missed[:10]) or "—"
+    missed_phones = "\n".join(
+        f"— {c.get('phone') or '—'} ({_callback_status(c.get('phone'), c.get('processed_at', 0), callbacks)})"
+        for c in missed[:10]
+    ) or "—"
 
     prompt = REPORT_PROMPT.format(
         date=date_str,
@@ -148,7 +196,7 @@ def _write_report(incoming: list[dict], outgoing: list[dict], missed: list[dict]
         out_r0=out_r[0], out_r1=out_r[1], out_r2=out_r[2], out_r3=out_r[3],
         missed_total=len(missed),
         missed_hours=missed_hours,
-        in_calls="\n\n".join(_in_call_str(c) for c in incoming) or "—",
+        in_calls="\n\n".join(_in_call_str(c, callbacks) for c in incoming) or "—",
         out_calls="\n\n".join(_out_call_str(c) for c in outgoing) or "—",
         missed_phones=missed_phones,
     )
@@ -188,6 +236,7 @@ def main():
 
     calls = db.get_today_calls(start_ms, end_ms)  # dismissed уже исключены
     missed = db.get_today_missed(start_ms, end_ms)
+    callbacks = _get_outbound_attempts(start_ms, end_ms)
     date_str = target.strftime("%d.%m.%Y")
 
     incoming = [c for c in calls if c.get("kind") in ("in", None, "")]
@@ -201,7 +250,7 @@ def main():
         f"📊 <b>Підсумки за {date_str}</b>  ·  "
         f"📥{len(incoming)}  📤{len(outgoing)}  📞×{len(missed)}\n\n"
     )
-    body = _write_report(incoming, outgoing, missed, date_str)
+    body = _write_report(incoming, outgoing, missed, date_str, callbacks)
     notify.send(header + body)
 
 
