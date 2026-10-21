@@ -19,6 +19,20 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
+# Защита: сообщения мають йти лише в групу / супергрупу / канал (ID < 0),
+# ніколи — в особисте листування. Якщо .env не прочитано і підхопився
+# якийсь залишковий user-id з оточення — краще впасти тут, ніж спамити в особисте.
+try:
+    _chat_id_int = int(TELEGRAM_CHAT_ID)
+except ValueError:
+    raise RuntimeError(f"TELEGRAM_CHAT_ID має бути числом, отримано: {TELEGRAM_CHAT_ID!r}")
+if _chat_id_int >= 0:
+    raise RuntimeError(
+        f"TELEGRAM_CHAT_ID={TELEGRAM_CHAT_ID} схоже на особистий чат (додатнє число). "
+        f"Очікується ID групи або каналу (від'ємне число). "
+        f"Перевір .env у D:\\bot і робочий каталог процесу."
+    )
+
 MIN_DURATION_SECONDS = int(os.getenv("MIN_DURATION_SECONDS", "20"))
 POLL_WINDOW_MINUTES = int(os.getenv("POLL_WINDOW_MINUTES", "15"))
 POLL_INTERVAL_MINUTES = int(os.getenv("POLL_INTERVAL_MINUTES", "10"))
