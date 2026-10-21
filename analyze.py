@@ -216,13 +216,35 @@ def _parse_json(text: str) -> dict:
     return json.loads(text)
 
 
-def analyze_outbound(transcript: str) -> dict:
+def _is_vet_operator(operator: str) -> bool:
+    """Стаціонар — дзвонять лікарі, а не адміни. Для них медичні пояснення — норма."""
+    if not operator:
+        return False
+    low = operator.lower()
+    return "стаціонар" in low or "стационар" in low
+
+
+VET_HINT = (
+    "\n\nВАЖЛИВО: цей дзвінок веде ЛІКАР ветклініки (оператор зі стаціонару), "
+    "а НЕ адміністратор. Для нього пояснення діагнозів, медичних деталей, "
+    "призначень, рекомендацій щодо лікування — ЦЕ ЙОГО ПРОФЕСІЙНА ЗОНА. "
+    "НЕ став risk і НЕ пиши в reason/fix, що 'адмін дав медичну інформацію', "
+    "'адмін не має пояснювати діагноз', 'перевищив свої повноваження' — це НЕ порушення. "
+    "Оцінюй лише тон, емпатію, чіткість, виконання обіцянок, згоду клієнта. "
+    "Крос-продаж/upsell для лікаря не оцінюй — ставити 2/2 (недоречно).\n"
+)
+
+
+def analyze_outbound(transcript: str, operator: str = "") -> dict:
     """Анализ исходящего звонка — только красные флаги, без 9 критериев."""
+    prompt = OUTBOUND_PROMPT.format(transcript=transcript)
+    if _is_vet_operator(operator):
+        prompt = prompt + VET_HINT
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
     msg = client.messages.create(
         model="claude-haiku-4-5",
         max_tokens=1200,
-        messages=[{"role": "user", "content": OUTBOUND_PROMPT.format(transcript=transcript)}],
+        messages=[{"role": "user", "content": prompt}],
     )
     data = _parse_json(_extract_text(msg))
     if data.get("is_supplier"):
@@ -240,12 +262,15 @@ def analyze_outbound(transcript: str) -> dict:
     return data
 
 
-def analyze(transcript: str) -> dict:
+def analyze(transcript: str, operator: str = "") -> dict:
+    prompt = _build_prompt(transcript)
+    if _is_vet_operator(operator):
+        prompt = prompt + VET_HINT
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
     msg = client.messages.create(
         model="claude-haiku-4-5",
         max_tokens=1500,
-        messages=[{"role": "user", "content": _build_prompt(transcript)}],
+        messages=[{"role": "user", "content": prompt}],
     )
     data = _parse_json(_extract_text(msg))
     if data.get("is_supplier"):

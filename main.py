@@ -93,8 +93,13 @@ def process_call(client: PhonetClient, call: dict) -> None:
         return
 
     is_outbound = direction == OUTGOING
+    operator_name = (call.get("leg") or {}).get("displayName", "")
     log.info("analyze %s (%s)", uuid, "OUT" if is_outbound else "IN")
-    analysis = analyze_outbound(transcript) if is_outbound else analyze(transcript)
+    analysis = (
+        analyze_outbound(transcript, operator=operator_name)
+        if is_outbound
+        else analyze(transcript, operator=operator_name)
+    )
 
     if analysis.get("is_supplier"):
         log.info("supplier/B2B call %s, skipping: %s", uuid, analysis.get("reason", ""))
